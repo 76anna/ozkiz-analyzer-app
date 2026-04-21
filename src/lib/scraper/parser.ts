@@ -44,8 +44,43 @@ function extractPrice($: cheerio.CheerioAPI): number {
 }
 
 function extractMainImage($: cheerio.CheerioAPI, baseUrl: string): string {
+  // 1순위: 상품 상세 영역의 큰 이미지 (실제 제품 사진)
+  const bigImages = $(".keyImg img, .BigImage img, #mainImage img, .detail_img img");
+  for (let i = 0; i < bigImages.length; i++) {
+    const src = $(bigImages[i]).attr("src") || $(bigImages[i]).attr("data-src") || "";
+    const fullSrc = src.startsWith("http") ? src : baseUrl + src;
+    if (fullSrc && isProductImage(fullSrc) && fullSrc.includes("/product/")) {
+      return fullSrc;
+    }
+  }
+
+  // 2순위: 썸네일 리스트에서 big 이미지로 변환
+  const thumbs = $(".xans-product-image img, .thumbnail_list img, .thumb img");
+  for (let i = 0; i < thumbs.length; i++) {
+    let src = $(thumbs[i]).attr("src") || $(thumbs[i]).attr("data-src") || "";
+    if (src) {
+      const fullSrc = src.startsWith("http") ? src : baseUrl + src;
+      const bigSrc = fullSrc.replace("/small/", "/big/").replace("/tiny/", "/big/");
+      if (isProductImage(bigSrc) && bigSrc.includes("/product/")) {
+        return bigSrc;
+      }
+    }
+  }
+
+  // 3순위: 상세 설명에서 첫 번째 제품 이미지
+  const descImages = $(".cont img, #prdDetail img");
+  for (let i = 0; i < descImages.length; i++) {
+    const src = $(descImages[i]).attr("src") || $(descImages[i]).attr("data-src") || "";
+    const fullSrc = src.startsWith("http") ? src : baseUrl + src;
+    if (fullSrc && isProductImage(fullSrc) && fullSrc.includes("/product/")) {
+      return fullSrc;
+    }
+  }
+
+  // 4순위: og:image (로고일 수 있지만 없는 것보다 낫다)
   const og = $("meta[property='og:image']").attr("content") || "";
   if (og) return og.startsWith("http") ? og : baseUrl + og;
+
   return "";
 }
 
@@ -54,6 +89,19 @@ function extractAllImages($: cheerio.CheerioAPI, baseUrl: string): string[] {
   const seen = new Set<string>();
   const main = extractMainImage($, baseUrl);
   if (main) { images.push(main); seen.add(main); }
+
+  // 썸네일 이미지들
+  $(".xans-product-image img, .thumbnail_list img, .thumb img").each((_, el) => {
+    let src = $(el).attr("src") || $(el).attr("data-src") || "";
+    if (src && !src.startsWith("http")) src = baseUrl + src;
+    src = src.replace("/small/", "/big/").replace("/tiny/", "/big/");
+    if (src && !seen.has(src) && isProductImage(src) && images.length < 10) {
+      seen.add(src);
+      images.push(src);
+    }
+  });
+
+  // 상세 이미지
   $(".cont img, #prdDetail img").each((_, el) => {
     let src = $(el).attr("src") || $(el).attr("data-src") || "";
     if (src && !src.startsWith("http")) src = baseUrl + src;
@@ -62,6 +110,7 @@ function extractAllImages($: cheerio.CheerioAPI, baseUrl: string): string[] {
       images.push(src);
     }
   });
+
   return images;
 }
 
@@ -73,7 +122,7 @@ function extractCategory($: cheerio.CheerioAPI): string {
   });
   if (crumbs.length > 0) return crumbs[crumbs.length - 1];
   const name = extractName($);
-  const keywords = ["원피스","아우터","상의","하의","레깅스","가디건","운동화","구두","샌들","부츠","슬리퍼","장화","슬립온","실내복","상하복","수영복","스커트","팬츠"];
+  const keywords = ["원피스", "아우터", "상의", "하의", "레깅스", "가디건", "운동화", "구두", "샌들", "부츠", "슬리퍼", "장화", "슬립온", "실내복", "상하복", "수영복", "스커트", "팬츠"];
   for (const kw of keywords) {
     if (name.includes(kw)) return kw;
   }
