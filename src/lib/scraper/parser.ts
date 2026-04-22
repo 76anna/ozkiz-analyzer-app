@@ -17,8 +17,8 @@ export function parseProductPage(html: string, sourceUrl: string): OzkizProduct 
     material: findTableValue($, "제품 소재") || findTableValue($, "소재") || "",
     size_options: extractOptions($, "사이즈", "size"),
     age_range: extractAgeRange($),
-    image_thumbnail: extractMainImage($, baseUrl),
-    image_urls: extractAllImages($, baseUrl),
+    image_thumbnail: extractMainImage($, baseUrl, html),
+    image_urls: extractAllImages($, baseUrl, html),
     description: extractDescription($),
     scraped_at: new Date().toISOString(),
   };
@@ -43,73 +43,55 @@ function extractPrice($: cheerio.CheerioAPI): number {
   return 0;
 }
 
-function extractMainImage($: cheerio.CheerioAPI, baseUrl: string): string {
-  // 1순위: 상품 상세 영역의 큰 이미지 (실제 제품 사진)
-  const bigImages = $(".keyImg img, .BigImage img, #mainImage img, .detail_img img");
-  for (let i = 0; i < bigImages.length; i++) {
-    const src = $(bigImages[i]).attr("src") || $(bigImages[i]).attr("data-src") || "";
-    const fullSrc = src.startsWith("http") ? src : baseUrl + src;
-    if (fullSrc && isProductImage(fullSrc) && fullSrc.includes("/product/")) {
-      return fullSrc;
-    }
+function extractMainImage($: cheerio.CheerioAPI, baseUrl: string, html: string): string {
+  // 방법 1: HTML에서 /web/product/big/ 패턴의 이미지 URL 직접 추출
+  const bigImageRegex = /https?:\/\/[^"'\s]+\/web\/product\/big\/[^"'\s]+\.(jpg|jpeg|png|webp)/gi;
+  const bigMatches = html.match(bigImageRegex);
+  if (bigMatches && bigMatches.length > 0) {
+    return bigMatches[0];
   }
 
-  // 2순위: 썸네일 리스트에서 big 이미지로 변환
-  const thumbs = $(".xans-product-image img, .thumbnail_list img, .thumb img");
-  for (let i = 0; i < thumbs.length; i++) {
-    let src = $(thumbs[i]).attr("src") || $(thumbs[i]).attr("data-src") || "";
-    if (src) {
-      const fullSrc = src.startsWith("http") ? src : baseUrl + src;
-      const bigSrc = fullSrc.replace("/small/", "/big/").replace("/tiny/", "/big/");
-      if (isProductImage(bigSrc) && bigSrc.includes("/product/")) {
-        return bigSrc;
-      }
-    }
+  // 방법 2: cafe24 CDN 패턴
+  const cafe24Regex = /https?:\/\/cafe24\.poxo\.com[^"'\s]+\/web\/product\/[^"'\s]+\.(jpg|jpeg|png|webp)/gi;
+  const cafe24Matches = html.match(cafe24Regex);
+  if (cafe24Matches && cafe24Matches.length > 0) {
+    return cafe24Matches[0];
   }
 
-  // 3순위: 상세 설명에서 첫 번째 제품 이미지
-  const descImages = $(".cont img, #prdDetail img");
-  for (let i = 0; i < descImages.length; i++) {
-    const src = $(descImages[i]).attr("src") || $(descImages[i]).attr("data-src") || "";
-    const fullSrc = src.startsWith("http") ? src : baseUrl + src;
-    if (fullSrc && isProductImage(fullSrc) && fullSrc.includes("/product/")) {
-      return fullSrc;
+  // 방법 3: 모든 img 태그에서 /product/ 포함된 이미지
+  let found = "";
+  $("img").each((_, el) => {
+    if (found) return;
+    const src = $(el).attr("src") || "";
+    if (src.includes("/product/") && src.includes("/big/")) {
+      found = src.startsWith("http") ? src : baseUrl + src;
     }
-  }
+  });
+  if (found) return found;
 
-  // 4순위: og:image (로고일 수 있지만 없는 것보다 낫다)
+  // 방법 4: og:image
   const og = $("meta[property='og:image']").attr("content") || "";
   if (og) return og.startsWith("http") ? og : baseUrl + og;
 
   return "";
 }
 
-function extractAllImages($: cheerio.CheerioAPI, baseUrl: string): string[] {
+function extractAllImages($: cheerio.CheerioAPI, baseUrl: string, html: string): string[] {
   const images: string[] = [];
   const seen = new Set<string>();
-  const main = extractMainImage($, baseUrl);
+  const main = extractMainImage($, baseUrl, html);
   if (main) { images.push(main); seen.add(main); }
 
-  // 썸네일 이미지들
-  $(".xans-product-image img, .thumbnail_list img, .thumb img").each((_, el) => {
-    let src = $(el).attr("src") || $(el).attr("data-src") || "";
-    if (src && !src.startsWith("http")) src = baseUrl + src;
-    src = src.replace("/small/", "/big/").replace("/tiny/", "/big/");
-    if (src && !seen.has(src) && isProductImage(src) && images.length < 10) {
-      seen.add(src);
-      images.push(src);
+  // HTML에서 모든 product 이미지 URL 추출
+  const allRegex = /https?:\/\/[^"'\s]+\/web\/product\/[^"'\s]+\.(jpg|jpeg|png|webp)/gi;
+  const allMatches = html.match(allRegex) || [];
+  for (const url of allMatches) {
+    const clean = url.replace(/\/small\//g, "/big/").replace(/\/tiny\//g, "/big/");
+    if (!seen.has(clean) && isProductImage(clean) && images.length < 10) {
+      seen.add(clean);
+      images.push(clean);
     }
-  });
-
-  // 상세 이미지
-  $(".cont img, #prdDetail img").each((_, el) => {
-    let src = $(el).attr("src") || $(el).attr("data-src") || "";
-    if (src && !src.startsWith("http")) src = baseUrl + src;
-    if (src && !seen.has(src) && isProductImage(src) && images.length < 10) {
-      seen.add(src);
-      images.push(src);
-    }
-  });
+  }
 
   return images;
 }
