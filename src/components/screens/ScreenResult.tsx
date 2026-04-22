@@ -105,7 +105,7 @@ export function ScreenResult({ product, competitors, analysis, onReset }: Props)
           <div className="lg:col-span-3 bg-white rounded-2xl border border-gray-100 p-5 flex flex-col sm:flex-row gap-4">
             {product.image_thumbnail && (
               <div className="w-20 h-20 bg-gray-50 rounded-xl flex items-center justify-center flex-shrink-0 border border-gray-100 overflow-hidden">
-                <img src={product.image_thumbnail} alt={product.product_name} className="max-h-20 object-contain" />
+                <img src={`/api/image?url=${encodeURIComponent(product.image_thumbnail)}`} alt={product.product_name} className="max-h-20 object-contain" />
               </div>
             )}
             <div className="flex-1 space-y-2 min-w-0">
@@ -246,7 +246,7 @@ export function ScreenResult({ product, competitors, analysis, onReset }: Props)
                       <span className="text-[10px] bg-gray-100 text-gray-500 px-1.5 py-0.5 rounded font-medium">{c.brand}</span>
                       <span className="text-[10px] text-gray-300">{c.source}</span>
                     </div>
-                    <p className="text-sm font-semibold text-gray-900 truncate">{c.name}</p>
+                    <a href={c.link} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-gray-900 truncate hover:text-blue-600 hover:underline block">{c.name}</a>
                     <span className="text-sm font-bold text-gray-800">{formatPrice(c.price)}</span>
                   </div>
                   <div className="flex flex-col items-end gap-1 flex-shrink-0">
