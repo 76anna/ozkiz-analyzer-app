@@ -65,7 +65,7 @@ export async function searchCompetitors(product: OzkizProduct): Promise<SearchRe
     .slice(0, 20);
 
   const productType = detectProductType(product.product_name, product.category);
-  return calculateSimilarity(filtered, product, productType).slice(0, 5);
+  return calculateSimilarity(filtered, product, productType).slice(0, 10);
 }
 
 // 상품 타입 감지 (신발 vs 의류 vs 잡화)
