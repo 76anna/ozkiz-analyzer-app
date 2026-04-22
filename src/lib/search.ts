@@ -15,7 +15,10 @@ export interface SearchResult {
 }
 
 export async function searchCompetitors(product: OzkizProduct): Promise<SearchResult[]> {
-  const keywords = generateKeywords(product);
+  // 1단계: AI가 검색 키워드 생성
+  const keywords = await generateKeywordsWithAI(product);
+
+  // 2단계: 네이버 쇼핑 검색
   const allItems: SearchResult[] = [];
   const seen = new Set<string>();
 
@@ -60,84 +63,184 @@ export async function searchCompetitors(product: OzkizProduct): Promise<SearchRe
   const filtered = allItems
     .filter((item) => {
       const priceRatio = Math.abs(item.price - effectivePrice) / effectivePrice;
-      return priceRatio < 0.5 && item.price > 3000;
+      return priceRatio < 0.6 && item.price > 3000;
     })
-    .slice(0, 20);
+    .slice(0, 25);
 
-  const productType = detectProductType(product.product_name, product.category);
-  return calculateSimilarity(filtered, product, productType).slice(0, 10);
+  // 3단계: AI가 디자인 유사도 판별
+  const ranked = await rankWithAI(product, filtered);
+  return ranked.slice(0, 10);
 }
 
-// 상품 타입 감지 (신발 vs 의류 vs 잡화)
-function detectProductType(name: string, category: string): string {
-  const text = (name + " " + category).toLowerCase();
+// AI가 검색 키워드를 생성
+async function generateKeywordsWithAI(product: OzkizProduct): Promise<string[]> {
+  try {
+    const prompt = `당신은 아동복/아동화 쇼핑 전문가입니다.
+아래 OZKIZ 상품과 디자인이 비슷한 경쟁 상품을 네이버 쇼핑에서 찾으려 합니다.
+검색 키워드 5개를 만들어주세요.
 
-  const shoeWords = ["운동화", "구두", "샌들", "부츠", "슬리퍼", "장화", "슬립온", "신발", "스니커즈", "플랫", "로퍼", "워커", "레인부츠", "아쿠아슈즈", "실내화", "슈즈", "shoes"];
-  for (const w of shoeWords) {
-    if (text.includes(w)) return "shoes";
+상품명: ${product.product_name}
+카테고리: ${product.category}
+소재: ${product.material}
+컬러: ${product.colors.join(", ")}
+설명: ${product.description || "없음"}
+
+규칙:
+- 반드시 "아동" 또는 "키즈" 또는 "여아" 또는 "남아"를 포함
+- 상품의 디자인 특징(실루엣, 패턴, 디테일)을 구체적으로 반영
+- 신발이면 신발 키워드, 옷이면 옷 키워드 사용
+- JSON 배열로만 응답: ["키워드1", "키워드2", "키워드3", "키워드4", "키워드5"]`;
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 300,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "";
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+      const keywords = JSON.parse(match[0]);
+      if (Array.isArray(keywords) && keywords.length > 0) {
+        return keywords.slice(0, 5);
+      }
+    }
+  } catch (err) {
+    console.error("AI 키워드 생성 실패:", err);
   }
 
-  const accWords = ["가방", "모자", "양말", "헤어밴드", "머리띠", "벨트", "장갑", "목도리", "스카프"];
-  for (const w of accWords) {
-    if (text.includes(w)) return "accessory";
-  }
-
-  return "clothing";
+  // AI 실패 시 기본 키워드
+  return generateFallbackKeywords(product);
 }
 
-function generateKeywords(product: OzkizProduct): string[] {
+// AI가 검색 결과를 디자인 유사도로 랭킹
+async function rankWithAI(product: OzkizProduct, items: SearchResult[]): Promise<SearchResult[]> {
+  if (items.length === 0) return items;
+
+  try {
+    const itemList = items.map((item, i) => `${i + 1}. [${item.brand}] ${item.name} - ${item.price}원`).join("\n");
+
+    const prompt = `당신은 아동복/아동화 디자인 전문가입니다.
+아래 OZKIZ 상품과 디자인이 가장 비슷한 경쟁 상품을 골라주세요.
+
+OZKIZ 상품:
+- 상품명: ${product.product_name}
+- 카테고리: ${product.category}
+- 소재: ${product.material}
+- 컬러: ${product.colors.join(", ")}
+
+경쟁 상품 목록:
+${itemList}
+
+각 상품에 디자인 유사도 점수(0~100)를 매겨주세요.
+판단 기준: 같은 카테고리인지, 실루엣이 비슷한지, 디자인 스타일이 유사한지, 타겟 고객이 같은지
+
+JSON 배열로만 응답하세요. 번호와 점수만:
+[{"id": 1, "score": 85}, {"id": 2, "score": 60}, ...]`;
+
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": process.env.ANTHROPIC_API_KEY || "",
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 1000,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "";
+    const match = text.match(/\[[\s\S]*\]/);
+    if (match) {
+      const scores = JSON.parse(match[0]) as { id: number; score: number }[];
+      const scoreMap = new Map(scores.map((s) => [s.id, s.score]));
+
+      return items
+        .map((item, i) => ({
+          ...item,
+          similarity: scoreMap.get(i + 1) || 0,
+        }))
+        .sort((a, b) => b.similarity - a.similarity);
+    }
+  } catch (err) {
+    console.error("AI 랭킹 실패:", err);
+  }
+
+  // AI 실패 시 기본 점수
+  return calculateBasicSimilarity(items, product);
+}
+
+// AI 실패 시 기본 키워드 생성
+function generateFallbackKeywords(product: OzkizProduct): string[] {
   const name = product.product_name;
   const keywords: string[] = [];
   const productType = detectProductType(name, product.category);
 
-  // 상품명에서 핵심 카테고리 추출
-  const allCategoryWords: Record<string, string[]> = {
-    shoes: ["운동화", "구두", "샌들", "부츠", "슬리퍼", "장화", "슬립온", "신발", "스니커즈", "플랫", "로퍼", "워커", "레인부츠", "아쿠아슈즈", "실내화"],
-    clothing: ["원피스", "스커트", "아우터", "점퍼", "패딩", "코트", "가디건", "티셔츠", "맨투맨", "후드", "레깅스", "팬츠", "바지", "블라우스", "셔츠", "상하복", "실내복"],
-    accessory: ["가방", "모자", "양말", "헤어밴드", "머리띠"],
+  const categoryWords: Record<string, string[]> = {
+    shoes: ["운동화", "구두", "샌들", "부츠", "슬리퍼", "장화", "슬립온", "신발", "스니커즈", "플랫", "로퍼"],
+    clothing: ["원피스", "스커트", "아우터", "점퍼", "패딩", "코트", "가디건", "티셔츠", "맨투맨", "후드", "레깅스", "팬츠", "바지", "상하복", "실내복"],
+    accessory: ["가방", "모자", "양말", "헤어밴드"],
   };
 
-  const categoryWords = allCategoryWords[productType] || allCategoryWords.clothing;
   let category = "";
-  for (const word of categoryWords) {
-    if (name.includes(word)) {
-      category = word;
-      break;
-    }
+  const words = categoryWords[productType] || categoryWords.clothing;
+  for (const w of words) {
+    if (name.includes(w)) { category = w; break; }
   }
   if (!category) category = product.category;
 
-  // 디자인 키워드 추출
-  const designWords = ["플라워", "꽃무늬", "프릴", "리본", "체크", "스트라이프", "캐릭터", "레이스", "셔링", "캉캉", "방울꽃", "데이지", "벌룬", "나비", "하트", "도트", "공주", "반짝이", "글리터", "LED", "캐릭터"];
-  let design = "";
-  for (const word of designWords) {
-    if (name.includes(word)) {
-      design = word;
-      break;
-    }
-  }
+  keywords.push("키즈 브랜드 " + category);
+  keywords.push("아동 " + category);
+  keywords.push("여아 " + category);
 
-  // 상품 타입별 키워드 생성
-  if (productType === "shoes") {
-    if (design) {
-      keywords.push("키즈 " + design + " " + category);
-    }
-    keywords.push("아동 " + category);
-    keywords.push("키즈 브랜드 " + category);
-    keywords.push("여아 " + category);
-  } else if (productType === "accessory") {
-    keywords.push("아동 " + category);
-    keywords.push("키즈 " + category);
-  } else {
-    if (design) {
-      keywords.push("키즈 " + design + " " + category);
-      keywords.push("아동 " + design + " " + category);
-    }
-    keywords.push("키즈브랜드 여아 " + category);
-    keywords.push("아동복 브랜드 " + category);
-  }
+  return keywords;
+}
 
-  return keywords.slice(0, 4);
+function detectProductType(name: string, category: string): string {
+  const text = (name + " " + category).toLowerCase();
+  const shoeWords = ["운동화", "구두", "샌들", "부츠", "슬리퍼", "장화", "슬립온", "신발", "스니커즈", "플랫", "로퍼", "워커", "슈즈", "shoes"];
+  if (shoeWords.some((w) => text.includes(w))) return "shoes";
+  const accWords = ["가방", "모자", "양말", "헤어밴드", "머리띠"];
+  if (accWords.some((w) => text.includes(w))) return "accessory";
+  return "clothing";
+}
+
+// AI 실패 시 기본 유사도 계산
+function calculateBasicSimilarity(items: SearchResult[], product: OzkizProduct): SearchResult[] {
+  const effectivePrice = product.price_sale ?? product.price_original;
+  const productName = product.product_name.toLowerCase();
+  const productType = detectProductType(product.product_name, product.category);
+
+  return items.map((item) => {
+    let score = 0;
+    const itemName = item.name.toLowerCase();
+    const itemType = detectProductType(item.name, "");
+
+    if (itemType === productType) score += 30;
+    const priceDiff = Math.abs(item.price - effectivePrice) / effectivePrice;
+    if (priceDiff < 0.15) score += 20;
+    else if (priceDiff < 0.3) score += 10;
+
+    const allWords = ["원피스", "스커트", "운동화", "구두", "샌들", "부츠", "슬립온", "프릴", "리본", "플라워", "체크"];
+    for (const w of allWords) {
+      if (productName.includes(w) && itemName.includes(w)) score += 15;
+    }
+
+    return { ...item, similarity: Math.min(score, 100) };
+  }).sort((a, b) => b.similarity - a.similarity);
 }
 
 function cleanHtml(text: string): string {
@@ -151,73 +254,9 @@ function isOzkizProduct(name: string, mall: string): boolean {
 
 function isKidsProduct(name: string, cat1: string, cat2: string, cat3: string): boolean {
   const allText = (name + " " + cat1 + " " + cat2 + " " + cat3).toLowerCase();
-
   const kidsKeywords = ["아동", "키즈", "유아", "아기", "여아", "남아", "어린이", "주니어", "베이비", "kids", "baby"];
-  const hasKidsKeyword = kidsKeywords.some((k) => allText.includes(k));
-
   const adultKeywords = ["여성", "남성", "성인", "레이디", "우먼", "맨즈", "woman", "men", "ladies"];
-  const isAdult = adultKeywords.some((k) => allText.includes(k));
-
-  if (isAdult) return false;
-  if (hasKidsKeyword) return true;
-
-  const kidsCategoryKeywords = ["패션의류", "아동", "유아"];
-  return kidsCategoryKeywords.some((k) => allText.includes(k));
-}
-
-function calculateSimilarity(items: SearchResult[], product: OzkizProduct, productType: string): SearchResult[] {
-  const effectivePrice = product.price_sale ?? product.price_original;
-  const productName = product.product_name.toLowerCase();
-
-  return items.map((item) => {
-    let score = 0;
-    const itemName = item.name.toLowerCase();
-
-    // 1. 같은 상품 타입인지 확인 (최대 30점)
-    const itemType = detectProductType(item.name, "");
-    if (itemType === productType) {
-      score += 30;
-    } else {
-      // 타입이 다르면 감점
-      score -= 20;
-    }
-
-    // 2. 카테고리 키워드 일치 (최대 25점)
-    const allCatWords = ["원피스", "스커트", "아우터", "점퍼", "패딩", "코트", "가디건", "티셔츠", "맨투맨", "후드", "레깅스", "팬츠", "바지", "운동화", "구두", "샌들", "부츠", "슬리퍼", "슬립온", "실내복", "장화", "스니커즈", "로퍼", "워커"];
-    for (const cat of allCatWords) {
-      if (productName.includes(cat) && itemName.includes(cat)) {
-        score += 25;
-        break;
-      }
-    }
-
-    // 3. 디자인 키워드 일치 (최대 20점)
-    const designWords = ["플라워", "꽃", "프릴", "리본", "체크", "스트라이프", "레이스", "셔링", "캉캉", "방울꽃", "데이지", "벌룬", "나비", "하트", "도트", "캐릭터", "글리터", "반짝이", "LED"];
-    let designMatch = 0;
-    for (const word of designWords) {
-      if (productName.includes(word) && itemName.includes(word)) {
-        designMatch++;
-      }
-    }
-    score += Math.min(designMatch * 10, 20);
-
-    // 4. 가격 유사도 (최대 15점)
-    const priceDiff = Math.abs(item.price - effectivePrice) / effectivePrice;
-    if (priceDiff < 0.1) score += 15;
-    else if (priceDiff < 0.2) score += 12;
-    else if (priceDiff < 0.3) score += 9;
-    else if (priceDiff < 0.4) score += 6;
-    else score += 3;
-
-    // 5. 키즈 브랜드 보너스 (최대 10점)
-    const kidsBrands = ["모이몰른", "밀리엄", "블루독", "래핑차일드", "이루앤", "컬리수", "헤지스키즈", "빈폴키즈", "닥스키즈", "포코노", "알로봇", "키키코", "캉캉걸", "쇼콜라", "베베드피노", "리틀그라운드", "뉴발란스키즈", "나이키키즈", "아디다스키즈", "휠라키즈"];
-    const brandLower = item.brand.toLowerCase();
-    if (kidsBrands.some((b) => brandLower.includes(b.toLowerCase()))) {
-      score += 10;
-    }
-
-    score = Math.max(score, 0);
-    score = Math.min(score, 100);
-    return { ...item, similarity: score };
-  }).sort((a, b) => b.similarity - a.similarity);
+  if (adultKeywords.some((k) => allText.includes(k))) return false;
+  if (kidsKeywords.some((k) => allText.includes(k))) return true;
+  return false;
 }
